@@ -1,0 +1,206 @@
+package cbt.exambro.sas; // GANTI SESUAI PACKAGE NAME ANDA
+
+import android.annotation.SuppressLint;
+import android.os.Bundle;
+import android.provider.Settings;
+import android.view.WindowManager;
+import android.webkit.ConsoleMessage;
+import android.webkit.JavascriptInterface;
+import android.webkit.JsResult;
+import android.webkit.WebChromeClient;
+import android.webkit.ServiceWorkerClient;
+import android.webkit.ServiceWorkerController;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
+import android.net.http.SslError;
+import android.webkit.SslErrorHandler;
+import android.webkit.WebViewClient;
+import android.widget.Toast;
+import androidx.appcompat.app.AlertDialog;
+import androidx.appcompat.app.AppCompatActivity;
+import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
+public class MainActivity extends AppCompatActivity {
+
+    private WebView webView;
+    private SwipeRefreshLayout swipeRefreshLayout;
+    private final String URL_ONLINE = "https://cbt.p171.net/siswa/index.php";
+    private final String URL_LOCAL  = "https://192.168.90.50/cbt/siswa/index.php";
+    private boolean isAlertShowing = false;
+    private boolean isInExamMode = false; // Flag untuk tahu apakah sedang dalam halaman ujian
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+
+        // 1. KEAMANAN: Blokir Screenshot & Layar Tetap Nyala
+        getWindow().setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE);
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+
+        setContentView(R.layout.activity_main);
+        // --- PASTE KODE BACK BUTTON DI SINI ---
+        getOnBackPressedDispatcher().addCallback(this, new androidx.activity.OnBackPressedCallback(true) {
+            @Override
+            public void handleOnBackPressed() {
+                Toast.makeText(MainActivity.this, "Selesaikan ujian untuk keluar!", Toast.LENGTH_SHORT).show();
+            }
+        });
+        // --- SELESAI PASTE ---
+
+        webView = findViewById(R.id.webview_cbt);
+        swipeRefreshLayout = findViewById(R.id.swipe_refresh_layout);
+
+        swipeRefreshLayout.setOnRefreshListener(() -> {
+            webView.reload();
+        });
+        setupWebView();
+        determineServer();
+    }
+
+    @SuppressLint("SetJavaScriptEnabled")
+    private void setupWebView() {
+        WebSettings s = webView.getSettings();
+        s.setJavaScriptEnabled(true);
+        s.setDomStorageEnabled(true); // Wajib untuk Dexie.js
+        s.setDatabaseEnabled(true);
+        s.setAllowFileAccess(true);
+        s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);
+
+        // 2. IDENTITAS: Ambil Android ID dan pasang di User Agent
+        @SuppressLint("HardwareIds")
+        String androidId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+        s.setUserAgentString(s.getUserAgentString() + " CBT-P171-ID:" + androidId);
+
+        // Bridge antara JS Server dan Java Android
+        webView.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public boolean onConsoleMessage(ConsoleMessage cm) {
+                android.util.Log.d("WebViewJS", cm.message() + " -- From line "
+                        + cm.lineNumber() + " of "
+                        + cm.sourceId());
+                return true;
+            }
+
+            // Agar alert() JavaScript berfungsi di APK
+            @Override
+            public boolean onJsAlert(WebView view, String url, String message, JsResult result) {
+                isAlertShowing = true;
+                new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("Peringatan Ujian")
+                        .setMessage(message)
+                        .setPositiveButton(android.R.string.ok, (dialog, which) -> {
+                            isAlertShowing = false;
+                            result.confirm();
+                        })
+                        .setCancelable(false)
+                        .create()
+                        .show();
+                return true;
+            }
+        });
+        webView.addJavascriptInterface(new WebAppInterface(), "AndroidControl");
+
+        webView.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                return false; // Tetap buka di dalam aplikasi
+            }
+
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                super.onPageFinished(view, url);
+                swipeRefreshLayout.setRefreshing(false);
+            }
+
+            @Override
+            public void onReceivedSslError(WebView view, SslErrorHandler handler, SslError error) {
+                // BYPASS SSL AGRESIF untuk IP Lokal (Development)
+                // Selalu lanjukan jika mengandung IP lokal, tanpa peduli jenis errornya
+                String currentUrl = (view.getUrl() != null) ? view.getUrl() : "";
+                if (currentUrl.contains("192.168.90.50") || (error.getUrl() != null && error.getUrl().contains("192.168.90.50"))) {
+                    handler.proceed();
+                } else {
+                    handler.cancel();
+                }
+            }
+        });
+
+        // 3. Khusus Service Worker SSL Bypass (Android 24+)
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.N) {
+            ServiceWorkerController swController = ServiceWorkerController.getInstance();
+            swController.setServiceWorkerClient(new ServiceWorkerClient() {
+                @Override
+                public android.webkit.WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                    return super.shouldInterceptRequest(request);
+                }
+            });
+        }
+    }
+
+    private void determineServer() {
+        new Thread(() -> {
+            // Cek apakah server online bisa dijangkau dalam 2 detik
+            boolean isOnline = checkUrl(URL_ONLINE);
+            final String targetUrl = isOnline ? URL_ONLINE : URL_LOCAL;
+
+            runOnUiThread(() -> {
+                Toast.makeText(MainActivity.this, isOnline ? "Mode Online" : "Mode Lokal", Toast.LENGTH_SHORT).show();
+                webView.loadUrl(targetUrl);
+            });
+        }).start();
+    }
+
+    private boolean checkUrl(String urlStr) {
+        try {
+            HttpURLConnection connection = (HttpURLConnection) new URL(urlStr).openConnection();
+            connection.setConnectTimeout(2000);
+            connection.connect();
+            return (connection.getResponseCode() == 200);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    // Fungsi yang bisa dipanggil dari PHP/JS di Server
+    public class WebAppInterface {
+        @JavascriptInterface
+        public void setExamMode(boolean examMode) {
+            isInExamMode = examMode;
+            android.util.Log.d("CBT_DEBUG", "Exam Mode: " + examMode);
+        }
+    }
+
+    // 3. KEAMANAN: Kunci Tombol Home/Recent (Kiosk Mode)
+    @Override
+    public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (hasFocus) {
+            startLockTask();
+        } else {
+            // Jika kehilangan fokus DAN tidak sedang menampilkan alert
+            if (!isAlertShowing) {
+                webView.evaluateJavascript("window.dispatchEvent(new Event('blur'));", null);
+            }
+        }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // Saat APK di-minimize, trigger blur hanya jika tidak sedang ada alert
+        if (!isAlertShowing) {
+            webView.evaluateJavascript("window.dispatchEvent(new Event('blur'));", null);
+
+            // FAIL-SAFE: Jika sedang dalam mode ujian, tampilkan Toast peringatan secara asli
+            // Ini berguna jika koneksi mati/browser hang sehingga JS tidak merespons
+            if (isInExamMode) {
+                Toast.makeText(this, "PERINGATAN: Jangan keluar dari aplikasi saat ujian!", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+}
