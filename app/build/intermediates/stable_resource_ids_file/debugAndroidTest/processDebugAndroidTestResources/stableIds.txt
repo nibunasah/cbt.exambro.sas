@@ -1,2 +1,0 @@
-cbt.exambro.sas.test:style/WhiteBackgroundTheme = 0x7f010001
-cbt.exambro.sas.test:style/WhiteBackgroundDialogTheme = 0x7f010000

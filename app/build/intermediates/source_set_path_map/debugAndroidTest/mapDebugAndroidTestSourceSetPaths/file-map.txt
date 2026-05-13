@@ -1,6 +1,0 @@
-cbt.exambro.sas.test.app-core-1.7.0-0 C:\Users\Lenovo\.gradle\caches\8.13\transforms\d9b00afc8fc6058254b4c141e597a368\transformed\core-1.7.0\res
-cbt.exambro.sas.test.app-androidTest-1 C:\Users\Lenovo\AndroidStudioProjects\cbt.exambro.sas\app\build\generated\res\resValues\androidTest\debug
-cbt.exambro.sas.test.app-updated_navigation_xml-2 C:\Users\Lenovo\AndroidStudioProjects\cbt.exambro.sas\app\build\generated\updated_navigation_xml\debugAndroidTest
-cbt.exambro.sas.test.app-mergeDebugAndroidTestResources-3 C:\Users\Lenovo\AndroidStudioProjects\cbt.exambro.sas\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\merged.dir
-cbt.exambro.sas.test.app-mergeDebugAndroidTestResources-4 C:\Users\Lenovo\AndroidStudioProjects\cbt.exambro.sas\app\build\intermediates\incremental\debugAndroidTest\mergeDebugAndroidTestResources\stripped.dir
-cbt.exambro.sas.test.app-debugAndroidTest-5 C:\Users\Lenovo\AndroidStudioProjects\cbt.exambro.sas\app\build\intermediates\merged_res\debugAndroidTest\mergeDebugAndroidTestResources
