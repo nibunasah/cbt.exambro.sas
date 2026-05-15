@@ -73,7 +73,7 @@ public class MainActivity extends AppCompatActivity {
     private ImageButton btnSettings;
     private boolean isVideoFinished = false;
     private boolean pageLoadFinished = false;
-    private static final String API_URL = "http://192.168.18.30/update.p171.net/api.php";
+    private static final String API_URL = "https://update.p171.net/api.php";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -347,9 +347,32 @@ public class MainActivity extends AppCompatActivity {
                 url = "http://" + url;
             }
         }
+
+        final String finalUrl = url;
+        // Tampilkan peringatan jika tidak menggunakan HTTPS
+        if (finalUrl != null && !finalUrl.startsWith("https://")) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Peringatan Ujian Offline")
+                    .setMessage("Server ini tidak menggunakan HTTPS. Aplikasi Ujian tidak akan bisa berjalan dalam mode OFFLINE.\n\nHTTPS wajib digunakan agar fitur ujian offline berfungsi.")
+                    .setPositiveButton("Tetap Simpan", (dialog, which) -> {
+                        performSaveAndLoad(finalUrl);
+                    })
+                    .setNegativeButton("Ganti ke HTTPS", (dialog, which) -> {
+                        String httpsUrl = finalUrl.replace("http://", "https://");
+                        performSaveAndLoad(httpsUrl);
+                    })
+                    .setCancelable(false)
+                    .show();
+        } else {
+            performSaveAndLoad(finalUrl);
+        }
+    }
+
+    private void performSaveAndLoad(String url) {
         SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
         prefs.edit().putString(KEY_SERVER_URL, url).apply();
         URL_ONLINE = url;
+        determineServer(); // Jalankan loading server setelah disimpan
     }
 
     private static final String KEY_CACHED_SERVERS = "cached_servers";
@@ -449,7 +472,6 @@ public class MainActivity extends AppCompatActivity {
                 android.util.Log.d(TAG, "Server Selected: " + selected.name + " -> " + selected.url);
                 saveServerUrl(selectedUrl(selected.url));
                 Toast.makeText(MainActivity.this, "Terhubung ke " + selected.name, Toast.LENGTH_SHORT).show();
-                determineServer();
             }
         });
 
@@ -481,7 +503,6 @@ public class MainActivity extends AppCompatActivity {
             String newUrl = input.getText().toString().trim();
             if (!newUrl.isEmpty()) {
                 saveServerUrl(newUrl);
-                determineServer();
             }
         });
         builder.setNegativeButton("Kembali", (dialog, which) -> showSettingsDialog());
