@@ -21,8 +21,12 @@ import android.widget.Toast;
 import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
+import android.widget.VideoView;
+import android.net.Uri;
 import android.text.InputType;
 import android.content.SharedPreferences;
+import android.widget.TextView;
+import android.widget.ListView;
 import android.app.ActivityManager;
 import android.content.Context;
 import androidx.annotation.NonNull;
@@ -39,6 +43,21 @@ import javax.net.ssl.X509TrustManager;
 import android.os.Build;
 import android.net.ConnectivityManager;
 import android.net.NetworkCapabilities;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.ColorDrawable;
+import android.view.View;
+import android.view.ViewGroup;
+import android.view.LayoutInflater;
+import android.widget.BaseAdapter;
+import android.widget.ImageView;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicReference;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import org.json.JSONObject;
+import org.json.JSONArray;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -51,6 +70,10 @@ public class MainActivity extends AppCompatActivity {
     private boolean isInExamMode = false;
     private AlertDialog securityWarningDialog;
     private android.view.View splashScreen;
+    private ImageButton btnSettings;
+    private boolean isVideoFinished = false;
+    private boolean pageLoadFinished = false;
+    private static final String API_URL = "http://192.168.18.30/update.p171.net/api.php";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -98,9 +121,41 @@ public class MainActivity extends AppCompatActivity {
 
         // 3. Setup Splash Screen
         splashScreen = findViewById(R.id.splash_screen);
-        ImageButton btnSettings = findViewById(R.id.btn_settings); // Converted to local variable
-        btnSettings.setOnClickListener(v -> showSettingsDialog());
+        VideoView splashVideo = findViewById(R.id.splash_video);
+        SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        boolean hasPlayedSplash = prefs.getBoolean("has_played_splash", false);
 
+        if (!hasPlayedSplash && splashVideo != null) {
+            // Set Z-order to ensure video draws correctly
+            splashVideo.setZOrderOnTop(true);
+            String videoPath = "android.resource://" + getPackageName() + "/" + R.raw.splash_video;
+            Uri uri = Uri.parse(videoPath);
+            splashVideo.setVideoURI(uri);
+            splashVideo.setOnCompletionListener(mp -> {
+                isVideoFinished = true;
+                prefs.edit().putBoolean("has_played_splash", true).apply();
+                initializeAppLogic();
+            });
+            splashVideo.setOnErrorListener((mp, what, extra) -> {
+                isVideoFinished = true;
+                prefs.edit().putBoolean("has_played_splash", true).apply();
+                initializeAppLogic();
+                return true;
+            });
+            splashVideo.start();
+        } else {
+            isVideoFinished = true;
+            if (splashVideo != null) {
+                splashVideo.setVisibility(android.view.View.GONE);
+            }
+            initializeAppLogic();
+        }
+        
+        btnSettings = findViewById(R.id.btn_settings);
+        btnSettings.setOnClickListener(v -> showSettingsDialog());
+    }
+
+    private void initializeAppLogic() {
         // 4. Konfigurasi WebView LEBIH AWAL
         setupWebView();
         webView.clearCache(true);
@@ -109,7 +164,8 @@ public class MainActivity extends AppCompatActivity {
         loadServerUrl();
 
         if (URL_ONLINE == null || URL_ONLINE.isEmpty()) {
-            if (splashScreen != null) splashScreen.setVisibility(android.view.View.GONE);
+            pageLoadFinished = true;
+            checkAndHideSplash();
 
             String html = "<html><body style='display:flex;justify-content:center;align-items:center;height:100vh;flex-direction:column;font-family:sans-serif;text-align:center;padding:20px;'>" +
                     "<h2 style='color:#d32f2f;'>Server Belum Diatur</h2>" +
@@ -159,7 +215,7 @@ public class MainActivity extends AppCompatActivity {
                 }
                 isAlertShowing = true;
                 new AlertDialog.Builder(MainActivity.this)
-                        .setTitle("CBT P171")
+                        .setTitle("CBT Exambro SAS")
                         .setMessage(message)
                         .setPositiveButton(android.R.string.ok, (dialog, which) -> {
                             isAlertShowing = false;
@@ -222,9 +278,35 @@ public class MainActivity extends AppCompatActivity {
 
                     runOnUiThread(() -> {
                         if (splashScreen != null && splashScreen.getVisibility() == android.view.View.VISIBLE) {
-                            splashScreen.animate().alpha(0f).setDuration(500).withEndAction(() -> splashScreen.setVisibility(android.view.View.GONE)).start();
+                            splashScreen.animate().alpha(0f).setDuration(500).withEndAction(() -> {
+                                splashScreen.setVisibility(android.view.View.GONE);
+                                VideoView v = findViewById(R.id.splash_video);
+                                if (v != null) v.stopPlayback();
+                            }).start();
                         }
                     });
+                }
+            }
+
+            @Override
+            public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
+                super.doUpdateVisitedHistory(view, url, isReload);
+                if (btnSettings != null) {
+                    boolean isLoginPage = false;
+                    if (URL_ONLINE == null || URL_ONLINE.isEmpty()) {
+                        isLoginPage = true;
+                    } else if (url != null) {
+                        if (url.equals(URL_ONLINE) || url.equals(URL_ONLINE + "/") || 
+                            url.contains("login") || url.contains("index.php") || 
+                            url.contains("error.html") || url.startsWith("data:")) {
+                            isLoginPage = true;
+                        }
+                    }
+                    if (isLoginPage) {
+                        btnSettings.setVisibility(android.view.View.VISIBLE);
+                    } else {
+                        btnSettings.setVisibility(android.view.View.GONE);
+                    }
                 }
             }
 
@@ -232,9 +314,8 @@ public class MainActivity extends AppCompatActivity {
             public void onPageFinished(WebView view, String url) {
                 view.animate().alpha(1f).setDuration(200).start();
 
-                if (splashScreen != null && splashScreen.getVisibility() == android.view.View.VISIBLE) {
-                    splashScreen.animate().alpha(0f).setDuration(800).withEndAction(() -> splashScreen.setVisibility(android.view.View.GONE)).start();
-                }
+                pageLoadFinished = true;
+                checkAndHideSplash();
 
                 if (isInExamMode) {
                     view.getSettings().setCacheMode(WebSettings.LOAD_CACHE_ELSE_NETWORK);
@@ -271,18 +352,128 @@ public class MainActivity extends AppCompatActivity {
         URL_ONLINE = url;
     }
 
+    private static final String KEY_CACHED_SERVERS = "cached_servers";
+    private static final String TAG = "CBT_DEBUG";
+
     private void showSettingsDialog() {
+        android.util.Log.d(TAG, "showSettingsDialog called");
+        SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
+        String cachedJson = prefs.getString(KEY_CACHED_SERVERS, null);
+
+        if (cachedJson != null) {
+            android.util.Log.d(TAG, "Cache found. Parsing local data...");
+            try {
+                List<ServerItem> serverList = parseServerJson(cachedJson);
+                showServerSelectionDialog(serverList);
+            } catch (Exception e) {
+                android.util.Log.e(TAG, "Cache corrupted: " + e.getMessage());
+                refreshServerList();
+            }
+        } else {
+            android.util.Log.d(TAG, "No cache found. Fetching from server...");
+            refreshServerList();
+        }
+    }
+
+    private void refreshServerList() {
+        android.util.Log.d(TAG, "Starting refreshServerList from " + API_URL);
+        AlertDialog loadingDialog = new AlertDialog.Builder(this)
+                .setMessage("Menghubungkan ke pusat server...")
+                .setCancelable(false)
+                .show();
+
+        final AtomicReference<String> errorMessage = new AtomicReference<>("");
+
+        new Thread(() -> {
+            final String jsonResponse = fetchServerJsonFromServer(errorMessage);
+            runOnUiThread(() -> {
+                loadingDialog.dismiss();
+                if (jsonResponse != null) {
+                    android.util.Log.d(TAG, "Data received successfully. Saving to cache.");
+                    getSharedPreferences(PREF_NAME, MODE_PRIVATE).edit()
+                            .putString(KEY_CACHED_SERVERS, jsonResponse).apply();
+                    
+                    try {
+                        showServerSelectionDialog(parseServerJson(jsonResponse));
+                    } catch (Exception e) {
+                        android.util.Log.e(TAG, "Parse error: " + e.getMessage());
+                        Toast.makeText(this, "Format data tidak valid.", Toast.LENGTH_SHORT).show();
+                    }
+                } else {
+                    android.util.Log.e(TAG, "Fetch failed: " + errorMessage.get());
+                    Toast.makeText(MainActivity.this, "Gagal: " + errorMessage.get(), Toast.LENGTH_LONG).show();
+                    showServerSelectionDialog(new ArrayList<>());
+                }
+            });
+        }).start();
+    }
+
+    private void showServerSelectionDialog(List<ServerItem> servers) {
+        android.util.Log.d(TAG, "Displaying Selection Dialog with " + servers.size() + " servers");
+        
+        // Buat list baru yang menggabungkan server dari API + Opsi khusus
+        final List<ServerItem> displayItems = new ArrayList<>(servers);
+        displayItems.add(new ServerItem("Input Server Manual", "Ketik alamat server sendiri", true));
+        displayItems.add(new ServerItem("Perbarui Daftar Sekolah", "Ambil data terbaru dari pusat", false));
+
         AlertDialog.Builder builder = new AlertDialog.Builder(this);
-        builder.setTitle("Pengaturan Server");
+        
+        // Custom Title View
+        TextView titleView = new TextView(this);
+        titleView.setText("Pilih Server CBT");
+        titleView.setPadding(60, 50, 60, 20);
+        titleView.setTextSize(20);
+        titleView.setTypeface(null, Typeface.BOLD);
+        titleView.setTextColor(Color.BLACK);
+        builder.setCustomTitle(titleView);
+
+        ListView listView = new ListView(this);
+        listView.setDivider(new ColorDrawable(Color.parseColor("#EEEEEE")));
+        listView.setDividerHeight(1);
+        
+        ServerAdapter adapter = new ServerAdapter(this, displayItems);
+        listView.setAdapter(adapter);
+
+        builder.setView(listView);
+        AlertDialog dialog = builder.create();
+
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            dialog.dismiss();
+            ServerItem selected = displayItems.get(position);
+            
+            if (selected.name.equals("Input Server Manual")) {
+                showManualInputDialog();
+            } else if (selected.name.equals("Perbarui Daftar Sekolah")) {
+                refreshServerList();
+            } else {
+                android.util.Log.d(TAG, "Server Selected: " + selected.name + " -> " + selected.url);
+                saveServerUrl(selectedUrl(selected.url));
+                Toast.makeText(MainActivity.this, "Terhubung ke " + selected.name, Toast.LENGTH_SHORT).show();
+                determineServer();
+            }
+        });
+
+        builder.setNegativeButton("Tutup", (d, w) -> d.dismiss());
+        dialog.show();
+    }
+
+    private String selectedUrl(String url) {
+        if (!url.startsWith("http")) return "http://" + url;
+        return url;
+    }
+
+    private void showManualInputDialog() {
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+        builder.setTitle("Input Server Manual");
 
         final EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
-        input.setHint("Contoh: https://cbt.p171.net");
+        input.setHint("https://alamat-cbt.sch.id");
         input.setText(URL_ONLINE);
 
         LinearLayout layout = new LinearLayout(this);
         layout.setOrientation(LinearLayout.VERTICAL);
-        layout.setPadding(50, 20, 50, 10);
+        layout.setPadding(60, 40, 60, 10);
         layout.addView(input);
         builder.setView(layout);
 
@@ -290,20 +481,108 @@ public class MainActivity extends AppCompatActivity {
             String newUrl = input.getText().toString().trim();
             if (!newUrl.isEmpty()) {
                 saveServerUrl(newUrl);
-                Toast.makeText(MainActivity.this, "Server disimpan: " + URL_ONLINE, Toast.LENGTH_SHORT).show();
                 determineServer();
-            } else {
-                Toast.makeText(MainActivity.this, "URL tidak boleh kosong!", Toast.LENGTH_SHORT).show();
             }
         });
-        builder.setNegativeButton("Batal", (dialog, which) -> {
-            if (URL_ONLINE == null || URL_ONLINE.isEmpty()) {
-                Toast.makeText(MainActivity.this, "Server belum diatur!", Toast.LENGTH_SHORT).show();
-            }
-            dialog.cancel();
-        });
-
+        builder.setNegativeButton("Kembali", (dialog, which) -> showSettingsDialog());
         builder.show();
+    }
+
+    private String fetchServerJsonFromServer(AtomicReference<String> errorRef) {
+        try {
+            android.util.Log.d(TAG, "Requesting API: " + API_URL);
+            URL url = new URL(API_URL);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "P171-CBT-APP");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+
+            int code = conn.getResponseCode();
+            android.util.Log.d(TAG, "Response Code: " + code);
+
+            if (code == 200) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                String result = sb.toString();
+                android.util.Log.d(TAG, "Raw JSON: " + result);
+                return result;
+            } else {
+                errorRef.set("HTTP " + code);
+            }
+        } catch (java.net.SocketTimeoutException e) {
+            errorRef.set("Waktu koneksi habis. Server mungkin sibuk.");
+        } catch (Exception e) {
+            errorRef.set(e.getMessage());
+        }
+        return null;
+    }
+
+    private List<ServerItem> parseServerJson(String jsonStr) throws Exception {
+        List<ServerItem> list = new ArrayList<>();
+        JSONObject json = new JSONObject(jsonStr);
+        if (json.getBoolean("success")) {
+            JSONArray data = json.getJSONArray("data");
+            for (int i = 0; i < data.length(); i++) {
+                JSONObject obj = data.getJSONObject(i);
+                list.add(new ServerItem(obj.getString("name"), obj.getString("url")));
+            }
+        }
+        return list;
+    }
+
+    // --- Custom Adapter untuk Tampilan Pro ---
+    private class ServerAdapter extends BaseAdapter {
+        private final Context context;
+        private final List<ServerItem> items;
+
+        ServerAdapter(Context context, List<ServerItem> items) {
+            this.context = context;
+            this.items = items;
+        }
+
+        @Override public int getCount() { return items.size(); }
+        @Override public Object getItem(int position) { return items.get(position); }
+        @Override public long getItemId(int position) { return position; }
+
+        @Override
+        public View getView(int position, View convertView, ViewGroup parent) {
+            if (convertView == null) {
+                convertView = LayoutInflater.from(context).inflate(R.layout.item_server, parent, false);
+            }
+
+            ServerItem item = items.get(position);
+            TextView name = convertView.findViewById(R.id.item_name);
+            TextView url = convertView.findViewById(R.id.item_url);
+            ImageView icon = convertView.findViewById(R.id.item_icon);
+
+            name.setText(item.name);
+            url.setText(item.url);
+
+            // Ganti ikon berdasarkan jenis item
+            if (item.name.equals("Input Server Manual")) {
+                icon.setImageResource(android.R.drawable.ic_menu_edit);
+                name.setTextColor(Color.parseColor("#3b82f6"));
+            } else if (item.name.equals("Perbarui Daftar Sekolah")) {
+                icon.setImageResource(android.R.drawable.ic_popup_sync);
+                name.setTextColor(Color.parseColor("#10b981"));
+            } else {
+                icon.setImageResource(android.R.drawable.ic_menu_directions);
+                name.setTextColor(Color.BLACK);
+            }
+
+            return convertView;
+        }
+    }
+
+    private static class ServerItem {
+        String name;
+        String url;
+        ServerItem(String n, String u) { this.name = n; this.url = u; }
+        ServerItem(String n, String u, boolean isSpecial) { this.name = n; this.url = u; }
     }
 
     private void determineServer() {
@@ -550,5 +829,22 @@ public class MainActivity extends AppCompatActivity {
                 Toast.makeText(this, "PERINGATAN: Jangan keluar dari aplikasi saat ujian!", Toast.LENGTH_LONG).show();
             }
         }
+    }
+
+    private void checkAndHideSplash() {
+        runOnUiThread(() -> {
+            if (isVideoFinished && pageLoadFinished) {
+                if (splashScreen != null && splashScreen.getVisibility() == android.view.View.VISIBLE) {
+                    splashScreen.animate().alpha(0f).setDuration(800).withEndAction(() -> {
+                        splashScreen.setVisibility(android.view.View.GONE);
+                        VideoView v = findViewById(R.id.splash_video);
+                        if (v != null) {
+                            v.stopPlayback();
+                            v.setVisibility(android.view.View.GONE);
+                        }
+                    }).start();
+                }
+            }
+        });
     }
 }

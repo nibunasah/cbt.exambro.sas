@@ -1,18 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+    <!-- Izinkan trafik Cleartext (HTTP) untuk IP lokal Anda -->
     <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">192.168.18.30</domain>
         <domain includeSubdomains="true">192.168.90.110</domain>
+        <domain includeSubdomains="true">localhost</domain>
         <trust-anchors>
             <certificates src="system" />
             <certificates src="user" />
         </trust-anchors>
     </domain-config>
 
-    <domain-config cleartextTrafficPermitted="false">
-        <domain includeSubdomains="true">cbt.p106.net</domain>
+    <!-- Konfigurasi Global: Izinkan Cleartext secara umum untuk mempermudah debugging -->
+    <base-config cleartextTrafficPermitted="true">
         <trust-anchors>
             <certificates src="system" />
             <certificates src="user" />
         </trust-anchors>
-    </domain-config>
+    </base-config>
 </network-security-config>

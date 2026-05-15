@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.App.Starting" parent="Theme.AppCompat.Light.NoActionBar">
+        <!-- Set the splash screen background to white to match your video splash screen -->
+        <item name="android:windowSplashScreenBackground">#FFFFFF</item>
+        <!-- Use resized logo to prevent circular cropping -->
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/splash_icon_v31</item>
+    </style>
+</resources>
