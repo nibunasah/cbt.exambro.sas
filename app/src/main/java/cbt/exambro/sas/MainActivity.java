@@ -32,6 +32,9 @@ import android.content.Context;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.core.graphics.Insets;
+import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowInsetsCompat;
 import androidx.swiperefreshlayout.widget.SwipeRefreshLayout;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -74,6 +77,7 @@ public class MainActivity extends AppCompatActivity {
     private boolean isVideoFinished = false;
     private boolean pageLoadFinished = false;
     private static final String API_URL = "https://update.p171.net/api.php";
+    private static final int DEFAULT_BAR_COLOR = Color.parseColor("#0d6efd");
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -153,6 +157,87 @@ public class MainActivity extends AppCompatActivity {
         
         btnSettings = findViewById(R.id.btn_settings);
         btnSettings.setOnClickListener(v -> showSettingsDialog());
+
+        // 7. SOLUSI EDGE-TO-EDGE (Android 15+/16): konten WebView tidak boleh
+        //    menutupi status bar (ikon kamera/sinyal) & navigation bar.
+        applySystemBarInsets();
+
+        // 8. WARNA BAR (status/navigation): biru brand, konsisten di semua halaman
+        applyBarColor();
+    }
+
+    /**
+     * Android 15+ memaksa edge-to-edge untuk app targetSdk 35/36, sehingga
+     * konten WebView menggambar di belakang status bar & navigation bar.
+     * Handler ini menerapkan padding insets system bars ke kontainer WebView
+     * agar konten PWA tidak tertutup. Saat mode ujian (immersive) menyembunyikan
+     * system bars, inset otomatis menjadi 0 sehingga WebView tetap fullscreen.
+     */
+    private void applySystemBarInsets() {
+        ViewCompat.setOnApplyWindowInsetsListener(swipeRefreshLayout, (v, insets) -> {
+            Insets bars = insets.getInsets(
+                    WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout());
+            v.setPadding(0, bars.top, 0, bars.bottom);
+
+            // Tombol pengaturan juga harus turun mengikuti status bar
+            if (btnSettings != null) {
+                ViewGroup.MarginLayoutParams lp =
+                        (ViewGroup.MarginLayoutParams) btnSettings.getLayoutParams();
+                lp.topMargin = bars.top + dp(8);
+                btnSettings.setLayoutParams(lp);
+            }
+            return insets;
+        });
+    }
+
+    private int dp(int value) {
+        return Math.round(getResources().getDisplayMetrics().density * value);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void applyBarColor() {
+        int color = DEFAULT_BAR_COLOR;
+        // Android 15+: status bar transparan, warna tampil via background decor
+        getWindow().getDecorView().setBackgroundColor(color);
+        // Android 14 ke bawah: warnai bar secara eksplisit (minSdk 24, aman)
+        getWindow().setStatusBarColor(color);
+        getWindow().setNavigationBarColor(color);
+    }
+
+    /**
+     * Sembunyikan tombol pengaturan server jika siswa sudah login.
+     * Deteksi berbasis DOM: halaman login biasanya punya input password atau
+     * judul mengandung "login"/"masuk". Setelah login (dashboard/ujian) tombol
+     * otomatis disembunyikan. Tombol tetap tampil saat server belum diatur /
+     * halaman error.
+     */
+    private void updateSettingsButtonVisibilityByDom() {
+        if (btnSettings == null || webView == null) return;
+
+        String url = webView.getUrl();
+        boolean forceVisible = (URL_ONLINE == null || URL_ONLINE.isEmpty())
+                || url == null
+                || url.startsWith("data:")
+                || url.contains("error.html");
+        if (forceVisible) {
+            btnSettings.setVisibility(android.view.View.VISIBLE);
+            return;
+        }
+
+        webView.evaluateJavascript(
+                "(function(){" +
+                "var hasPw=!!document.querySelector('input[type=password]');" +
+                "var t=(document.title||'').toLowerCase();" +
+                "var inTitle=t.indexOf('login')>=0||t.indexOf('masuk')>=0;" +
+                "return (hasPw||inTitle)?'login':'other';" +
+                "})()",
+                value -> {
+                    if (value == null || "null".equals(value)) return;
+                    boolean isLoginPage = value.contains("login");
+                    btnSettings.setVisibility(isLoginPage
+                            ? android.view.View.VISIBLE
+                            : android.view.View.GONE);
+                });
     }
 
     private void initializeAppLogic() {
@@ -291,23 +376,16 @@ public class MainActivity extends AppCompatActivity {
             @Override
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 super.doUpdateVisitedHistory(view, url, isReload);
-                if (btnSettings != null) {
-                    boolean isLoginPage = false;
-                    if (URL_ONLINE == null || URL_ONLINE.isEmpty()) {
-                        isLoginPage = true;
-                    } else if (url != null) {
-                        if (url.equals(URL_ONLINE) || url.equals(URL_ONLINE + "/") || 
-                            url.contains("login") || url.contains("index.php") || 
-                            url.contains("error.html") || url.startsWith("data:")) {
-                            isLoginPage = true;
-                        }
-                    }
-                    if (isLoginPage) {
-                        btnSettings.setVisibility(android.view.View.VISIBLE);
-                    } else {
-                        btnSettings.setVisibility(android.view.View.GONE);
-                    }
+                if (btnSettings == null) return;
+                // Halaman yang selalu membutuhkan tombol pengaturan server
+                boolean forceVisible = (URL_ONLINE == null || URL_ONLINE.isEmpty())
+                        || url == null
+                        || url.startsWith("data:")
+                        || url.contains("error.html");
+                if (forceVisible) {
+                    btnSettings.setVisibility(android.view.View.VISIBLE);
                 }
+                // Selain itu: onPageFinished memutuskan via deteksi DOM (lebih akurat)
             }
 
             @Override
@@ -323,6 +401,9 @@ public class MainActivity extends AppCompatActivity {
                     view.getSettings().setCacheMode(WebSettings.LOAD_DEFAULT);
                 }
                 swipeRefreshLayout.setRefreshing(false);
+
+                // Sembunyikan tombol pengaturan server jika siswa sudah login
+                updateSettingsButtonVisibilityByDom();
             }
         });
 
@@ -549,10 +630,28 @@ public class MainActivity extends AppCompatActivity {
             JSONArray data = json.getJSONArray("data");
             for (int i = 0; i < data.length(); i++) {
                 JSONObject obj = data.getJSONObject(i);
+                // Filter: lewati website berstatus Inactive (jangan ditampilkan)
+                if (!isWebsiteActive(obj)) continue;
                 list.add(new ServerItem(obj.getString("name"), obj.getString("url")));
             }
         }
         return list;
+    }
+
+    /**
+     * Cek status website dari kolom "status" (tabel websites).
+     * - Active/aktif/1/true/yes  => aktif (ditampilkan)
+     * - Inactive/nonaktif/0/false => tidak aktif (disembunyikan)
+     * - Kolom "status" tidak ada  => dianggap aktif (backward compatible)
+     */
+    private boolean isWebsiteActive(JSONObject obj) {
+        if (!obj.has("status")) return true;
+        Object raw = obj.opt("status");
+        if (raw == null) return true;
+        String s = String.valueOf(raw).trim().toLowerCase();
+        if (s.isEmpty()) return true;
+        return s.equals("active") || s.equals("aktif")
+                || s.equals("1") || s.equals("true") || s.equals("yes") || s.equals("a");
     }
 
     // --- Custom Adapter untuk Tampilan Pro ---
