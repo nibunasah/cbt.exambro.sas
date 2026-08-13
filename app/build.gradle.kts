@@ -5,13 +5,13 @@ plugins {
 android {
     signingConfigs {
         getByName("debug") {
-            storeFile = file("C:\\Users\\hasan\\AndroidStudioProjects\\cbt.exambro.sas\\cbt-sas.keystore")
+            storeFile = file("C:\\Users\\Lenovo\\AndroidStudioProjects\\cbt.exambro.sas\\cbt-sas.keystore")
             keyAlias = "sas_alias"
             keyPassword = "Chombad85!"
             storePassword = "Chombad85!"
         }
         create("Release Build") {
-            storeFile = file("C:\\Users\\hasan\\AndroidStudioProjects\\cbt.exambro.sas\\cbt-sas.keystore")
+            storeFile = file("C:\\Users\\Lenovo\\AndroidStudioProjects\\cbt.exambro.sas\\cbt-sas.keystore")
             keyAlias = "sas_alias"
             keyPassword = "Chombad85!"
             storePassword = "Chombad85!"
