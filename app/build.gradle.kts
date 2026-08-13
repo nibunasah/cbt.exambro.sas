@@ -26,8 +26,8 @@ android {
         applicationId = "cbt.exambro.sas"
         minSdk = 24
         targetSdk = 36
-        versionCode = 205
-        versionName = "3.0.0"
+        versionCode = 206
+        versionName = "3.0.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         signingConfig = signingConfigs.getByName("Release Build")
