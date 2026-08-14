@@ -61,6 +61,17 @@ import java.io.BufferedReader;
 import java.io.InputStreamReader;
 import org.json.JSONObject;
 import org.json.JSONArray;
+import android.os.Environment;
+import android.widget.ProgressBar;
+import androidx.core.content.FileProvider;
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.contract.ActivityResultContracts;
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
+import android.content.pm.Signature;
 
 public class MainActivity extends AppCompatActivity {
 
@@ -77,7 +88,18 @@ public class MainActivity extends AppCompatActivity {
     private boolean isVideoFinished = false;
     private boolean pageLoadFinished = false;
     private static final String API_URL = "https://update.p171.net/api.php";
+    private static final String UPDATE_API_URL = "https://update.p171.net/version.json";
     private static final int DEFAULT_BAR_COLOR = Color.parseColor("#0d6efd");
+
+    // ---- Update & Instal APK (download langsung di dalam aplikasi) ----
+    private static final String FILE_PROVIDER_AUTHORITY = "cbt.exambro.sas.fileprovider";
+    private ActivityResultLauncher<android.content.Intent> installPermissionLauncher;
+    private String pendingDownloadUrl;
+    private AlertDialog downloadDialog;
+    private ProgressBar downloadProgressBar;
+    private TextView downloadStatusText;
+    private boolean updateCheckDone = false;
+    private boolean dashboardReloadDone = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -157,6 +179,19 @@ public class MainActivity extends AppCompatActivity {
         
         btnSettings = findViewById(R.id.btn_settings);
         btnSettings.setOnClickListener(v -> showSettingsDialog());
+
+        // Launcher untuk kembali dari halaman izin "Instal aplikasi tidak dikenal"
+        installPermissionLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                result -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && canRequestPackageInstalls()) {
+                        if (pendingDownloadUrl != null) {
+                            String url = pendingDownloadUrl;
+                            pendingDownloadUrl = null;
+                            downloadAndInstallApk(url);
+                        }
+                    }
+                });
 
         // 7. SOLUSI EDGE-TO-EDGE (Android 15+/16): konten WebView tidak boleh
         //    menutupi status bar (ikon kamera/sinyal) & navigation bar.
@@ -269,6 +304,9 @@ public class MainActivity extends AppCompatActivity {
 
         // 6. Pengecekan Perangkat
         checkDeviceRequirements();
+
+        // 6b. Cek update otomatis saat aplikasi dibuka
+        checkForUpdateSilently();
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -404,6 +442,8 @@ public class MainActivity extends AppCompatActivity {
 
                 // Sembunyikan tombol pengaturan server jika siswa sudah login
                 updateSettingsButtonVisibilityByDom();
+                // Reload 1x setelah dashboard terload sempurna agar file tercache
+                reloadDashboardOnceForCache();
             }
         });
 
@@ -459,8 +499,68 @@ public class MainActivity extends AppCompatActivity {
     private static final String KEY_CACHED_SERVERS = "cached_servers";
     private static final String TAG = "CBT_DEBUG";
 
+    /**
+     * Menu utama Pengaturan (ikon gear).
+     * Menampilkan pilihan: Pilih Server, Cek Update, Tentang SAS, Versi.
+     */
     private void showSettingsDialog() {
-        android.util.Log.d(TAG, "showSettingsDialog called");
+        android.util.Log.d(TAG, "showSettingsDialog (menu utama) called");
+
+        final List<ServerItem> menuItems = new ArrayList<>();
+        menuItems.add(new ServerItem("Pilih Server", "Pilih atau ubah server CBT", true));
+        menuItems.add(new ServerItem("Cek Update", "Periksa versi aplikasi terbaru", true));
+        menuItems.add(new ServerItem("Tentang SAS", "Informasi aplikasi CBT Exambro SAS", true));
+        menuItems.add(new ServerItem("Versi", "Detail versi aplikasi saat ini", true));
+
+        AlertDialog.Builder builder = new AlertDialog.Builder(this);
+
+        TextView titleView = new TextView(this);
+        titleView.setText("Menu Pengaturan");
+        titleView.setPadding(60, 50, 60, 20);
+        titleView.setTextSize(20);
+        titleView.setTypeface(null, Typeface.BOLD);
+        titleView.setTextColor(Color.BLACK);
+        builder.setCustomTitle(titleView);
+
+        ListView listView = new ListView(this);
+        listView.setDivider(new ColorDrawable(Color.parseColor("#EEEEEE")));
+        listView.setDividerHeight(1);
+
+        ServerAdapter adapter = new ServerAdapter(this, menuItems);
+        listView.setAdapter(adapter);
+
+        builder.setView(listView);
+        AlertDialog dialog = builder.create();
+
+        listView.setOnItemClickListener((parent, view, position, id) -> {
+            dialog.dismiss();
+            switch (position) {
+                case 0:
+                    showServerSelectionMenu();
+                    break;
+                case 1:
+                    checkForUpdate();
+                    break;
+                case 2:
+                    showAboutDialog();
+                    break;
+                case 3:
+                    showVersionDialog();
+                    break;
+                default:
+                    break;
+            }
+        });
+
+        builder.setNegativeButton("Tutup", (d, w) -> d.dismiss());
+        dialog.show();
+    }
+
+    /**
+     * Dialog pemilihan server (daftar sekolah dari API / cache).
+     */
+    private void showServerSelectionMenu() {
+        android.util.Log.d(TAG, "showServerSelectionMenu called");
         SharedPreferences prefs = getSharedPreferences(PREF_NAME, MODE_PRIVATE);
         String cachedJson = prefs.getString(KEY_CACHED_SERVERS, null);
 
@@ -586,8 +686,444 @@ public class MainActivity extends AppCompatActivity {
                 saveServerUrl(newUrl);
             }
         });
-        builder.setNegativeButton("Kembali", (dialog, which) -> showSettingsDialog());
+        builder.setNegativeButton("Kembali", (dialog, which) -> showServerSelectionMenu());
         builder.show();
+    }
+
+    // ================= MENU: CEK UPDATE =================
+
+    private void checkForUpdate() {
+        AlertDialog loadingDialog = new AlertDialog.Builder(this)
+                .setMessage("Memeriksa pembaruan...")
+                .setCancelable(false)
+                .show();
+
+        new Thread(() -> {
+            final String jsonResponse = fetchUpdateJson();
+            runOnUiThread(() -> {
+                loadingDialog.dismiss();
+                if (jsonResponse == null) {
+                    Toast.makeText(MainActivity.this, "Gagal memeriksa update. Periksa koneksi internet.", Toast.LENGTH_LONG).show();
+                    return;
+                }
+                try {
+                    JSONObject obj = new JSONObject(jsonResponse);
+                    int latestCode = obj.optInt("versionCode", 0);
+                    String latestName = obj.optString("versionName", "");
+                    String downloadUrl = obj.optString("url", "");
+                    String notes = obj.optString("notes", "");
+
+                    if (latestCode > getAppVersionCode()) {
+                        showUpdateAvailableDialog(latestName, downloadUrl, notes);
+                    } else {
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("Aplikasi Terbaru")
+                                .setMessage("Anda sudah menggunakan versi terbaru (v" + getAppVersionName() + ").")
+                                .setPositiveButton("OK", null)
+                                .show();
+                    }
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, "Data update tidak valid.", Toast.LENGTH_SHORT).show();
+                }
+            });
+        }).start();
+    }
+
+    /**
+     * Cek update otomatis saat aplikasi dibuka (senyap, tanpa dialog loading).
+     * Jika ada versi baru, dialog update muncul setelah splash hilang.
+     */
+    private void checkForUpdateSilently() {
+        if (updateCheckDone) return;
+        updateCheckDone = true;
+
+        new Thread(() -> {
+            final String jsonResponse = fetchUpdateJson();
+            runOnUiThread(() -> {
+                if (jsonResponse == null) return; // gagal/offline → diam saja
+                try {
+                    JSONObject obj = new JSONObject(jsonResponse);
+                    int latestCode = obj.optInt("versionCode", 0);
+                    String latestName = obj.optString("versionName", "");
+                    String downloadUrl = obj.optString("url", "");
+                    String notes = obj.optString("notes", "");
+                    if (latestCode > getAppVersionCode()) {
+                        showUpdateDialogAfterSplash(latestName, downloadUrl, notes, 0);
+                    }
+                } catch (Exception ignored) { }
+            });
+        }).start();
+    }
+
+    /**
+     * Tampilkan dialog update TAPI tunggu sampai splash screen hilang
+     * agar tidak menimpa video splash. Maksimal 10x percobaan (1,5 detik).
+     */
+    private void showUpdateDialogAfterSplash(String name, String url, String notes, int attempt) {
+        boolean splashStillVisible = splashScreen != null
+                && splashScreen.getVisibility() == android.view.View.VISIBLE;
+        if (splashStillVisible && attempt < 10) {
+            splashScreen.postDelayed(() -> showUpdateDialogAfterSplash(name, url, notes, attempt + 1), 1500);
+            return;
+        }
+        if (!isFinishing() && !isDestroyed() && !isInExamMode) {
+            showUpdateAvailableDialog(name, url, notes);
+        }
+    }
+
+    /**
+     * Setelah siswa login & dashboard terload sempurna (bukan halaman login),
+     * reload halaman 1x saja agar semua file (JS/CSS/service worker) tercache
+     * sempurna untuk kebutuhan ujian offline.
+     */
+    private void reloadDashboardOnceForCache() {
+        if (dashboardReloadDone || isInExamMode || webView == null) return;
+
+        String url = webView.getUrl();
+        if (url == null || url.startsWith("data:") || url.contains("error.html")) return;
+
+        webView.evaluateJavascript(
+                "(function(){" +
+                "var hasPw=!!document.querySelector('input[type=password]');" +
+                "var t=(document.title||'').toLowerCase();" +
+                "var inTitle=t.indexOf('login')>=0||t.indexOf('masuk')>=0;" +
+                "return (hasPw||inTitle)?'login':'other';" +
+                "})()",
+                value -> {
+                    if (value == null || "null".equals(value)) return;
+                    if (value.contains("other")) {
+                        dashboardReloadDone = true;
+                        webView.postDelayed(() -> {
+                            if (!isInExamMode && !isFinishing()) {
+                                android.util.Log.d(TAG, "Reload dashboard 1x untuk caching sempurna");
+                                webView.reload();
+                            }
+                        }, 3000);
+                    }
+                });
+    }
+
+    private String fetchUpdateJson() {
+        try {
+            URL url = new URL(UPDATE_API_URL);
+            HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "P171-CBT-APP");
+            conn.setConnectTimeout(10000);
+            conn.setReadTimeout(10000);
+            int code = conn.getResponseCode();
+            if (code == 200) {
+                BufferedReader reader = new BufferedReader(new InputStreamReader(conn.getInputStream()));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line);
+                reader.close();
+                return sb.toString();
+            }
+        } catch (Exception ignored) { }
+        return null;
+    }
+
+    private void showUpdateAvailableDialog(String latestName, String downloadUrl, String notes) {
+        String message = "Versi baru tersedia: v" + latestName + "\n\n" +
+                "Versi saat ini: v" + getAppVersionName() + "\n\n" +
+                (notes != null && !notes.isEmpty() ? "Catatan:\n" + notes + "\n\n" : "");
+        new AlertDialog.Builder(this)
+                .setTitle("Update Tersedia")
+                .setMessage(message)
+                .setPositiveButton("Download & Install", (d, w) -> downloadAndInstallApk(downloadUrl))
+                .setNegativeButton("Nanti", null)
+                .show();
+    }
+
+    // ================= DOWNLOAD & INSTALL APK =================
+
+    private void downloadAndInstallApk(String url) {
+        if (url == null || url.isEmpty()) {
+            Toast.makeText(this, "Link download tidak tersedia.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        // Android 8+ (API 26+): butuh izin "Instal aplikasi tidak dikenal"
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !canRequestPackageInstalls()) {
+            pendingDownloadUrl = url;
+            new AlertDialog.Builder(this)
+                    .setTitle("Izin Instal Aplikasi")
+                    .setMessage("Agar bisa menginstal update secara otomatis, aktifkan izin 'Instal aplikasi tidak dikenal' untuk aplikasi ini.")
+                    .setPositiveButton("Buka Pengaturan", (d, w) -> {
+                        try {
+                            android.content.Intent intent = new android.content.Intent(
+                                    android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:" + getPackageName()));
+                            installPermissionLauncher.launch(intent);
+                        } catch (Exception e) {
+                            Toast.makeText(this, "Gagal membuka pengaturan izin.", Toast.LENGTH_SHORT).show();
+                        }
+                    })
+                    .setNegativeButton("Batal", (d, w) -> pendingDownloadUrl = null)
+                    .show();
+            return;
+        }
+
+        showDownloadProgressDialog(url);
+    }
+
+    private boolean canRequestPackageInstalls() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return true;
+        try {
+            return getPackageManager().canRequestPackageInstalls();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private void showDownloadProgressDialog(String url) {
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(dp(24), dp(16), dp(24), dp(8));
+
+        downloadProgressBar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        downloadProgressBar.setMax(100);
+        downloadProgressBar.setProgress(0);
+        layout.addView(downloadProgressBar);
+
+        downloadStatusText = new TextView(this);
+        downloadStatusText.setText("Menyiapkan unduhan...");
+        downloadStatusText.setPadding(0, dp(12), 0, 0);
+        layout.addView(downloadStatusText);
+
+        downloadDialog = new AlertDialog.Builder(this)
+                .setTitle("Mengunduh Update")
+                .setView(layout)
+                .setCancelable(false)
+                .show();
+
+        new Thread(() -> {
+            File apkFile = downloadApk(url);
+            runOnUiThread(() -> {
+                if (downloadDialog != null && downloadDialog.isShowing()) downloadDialog.dismiss();
+                if (apkFile != null) {
+                    // Verifikasi APK sebelum instal: cegah error "paket bentrok" & APK palsu
+                    String verifyError = verifyUpdateApk(apkFile);
+                    if (verifyError != null) {
+                        try { apkFile.delete(); } catch (Exception ignored) { }
+                        new AlertDialog.Builder(MainActivity.this)
+                                .setTitle("Update Ditolak")
+                                .setMessage(verifyError + "\n\nPastikan file APK update di server dibangun dari project yang sama dan ditandatangani dengan file kunci yang sama (cbt-sas.keystore).")
+                                .setPositiveButton("OK", null)
+                                .show();
+                        return;
+                    }
+                    Toast.makeText(MainActivity.this, "Unduhan selesai. Menginstal...", Toast.LENGTH_SHORT).show();
+                    installApk(apkFile);
+                } else {
+                    Toast.makeText(MainActivity.this, "Gagal mengunduh APK. Coba lagi.", Toast.LENGTH_LONG).show();
+                }
+            });
+        }).start();
+    }
+
+    private File downloadApk(String urlStr) {
+        File targetDir = getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS);
+        if (targetDir == null) targetDir = getFilesDir();
+        final File apkFile = new File(targetDir, "cbt-exambro-sas-update.apk");
+        HttpURLConnection conn = null;
+        try {
+            URL url = new URL(urlStr);
+            conn = (HttpURLConnection) url.openConnection();
+            conn.setRequestMethod("GET");
+            conn.setRequestProperty("User-Agent", "P171-CBT-APP");
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(15000);
+            conn.connect();
+
+            int responseCode = conn.getResponseCode();
+            if (responseCode != 200) {
+                runOnUiThread(() -> {
+                    if (downloadStatusText != null) downloadStatusText.setText("Gagal (HTTP " + responseCode + ")");
+                });
+                return null;
+            }
+
+            int totalLength = conn.getContentLength();
+            InputStream input = conn.getInputStream();
+            FileOutputStream output = new FileOutputStream(apkFile);
+            byte[] buffer = new byte[8192];
+            int bytesRead;
+            long totalRead = 0;
+            while ((bytesRead = input.read(buffer)) != -1) {
+                output.write(buffer, 0, bytesRead);
+                totalRead += bytesRead;
+                if (totalLength > 0) {
+                    final int percent = (int) ((totalRead * 100) / totalLength);
+                    final long mb = totalRead / (1024 * 1024);
+                    runOnUiThread(() -> {
+                        if (downloadProgressBar != null) downloadProgressBar.setProgress(percent);
+                        if (downloadStatusText != null) downloadStatusText.setText("Mengunduh... " + percent + "% (" + mb + " MB)");
+                    });
+                }
+            }
+            output.flush();
+            output.close();
+            input.close();
+
+            if (apkFile.exists() && apkFile.length() > 0) {
+                runOnUiThread(() -> {
+                    if (downloadStatusText != null) downloadStatusText.setText("Selesai 100%");
+                });
+                return apkFile;
+            }
+        } catch (Exception e) {
+            runOnUiThread(() -> {
+                if (downloadStatusText != null) downloadStatusText.setText("Gagal: " + e.getMessage());
+            });
+            try { if (apkFile.exists()) apkFile.delete(); } catch (Exception ignored) { }
+        } finally {
+            if (conn != null) conn.disconnect();
+        }
+        return null;
+    }
+
+    /**
+     * Verifikasi APK hasil unduhan SEBELUM diinstal:
+     * 1. Nama paket harus sama
+     * 2. Versi harus lebih baru (anti-downgrade)
+     * 3. Tanda tangan (signature) harus cocok dengan aplikasi terpasang
+     *
+     * @return null jika valid, atau pesan error jika ada masalah
+     */
+    @SuppressWarnings("deprecation")
+    private String verifyUpdateApk(File apkFile) {
+        try {
+            // Baca info APK yang baru diunduh
+            int flags = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    ? PackageManager.GET_SIGNING_CERTIFICATES
+                    : PackageManager.GET_SIGNATURES;
+            PackageInfo apkInfo = getPackageManager().getPackageArchiveInfo(apkFile.getAbsolutePath(), flags);
+            if (apkInfo == null) {
+                return "File APK tidak valid (bukan aplikasi Android).";
+            }
+
+            // 1. Cek nama paket
+            if (!getPackageName().equals(apkInfo.packageName)) {
+                return "Nama paket APK berbeda (" + apkInfo.packageName + ").";
+            }
+
+            // 2. Cek versi (anti-downgrade)
+            int apkVersion = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
+                    ? (int) apkInfo.getLongVersionCode()
+                    : apkInfo.versionCode;
+            if (apkVersion <= getAppVersionCode()) {
+                return "Versi APK update (" + apkVersion + ") tidak lebih baru dari versi terpasang (" + getAppVersionCode() + ").";
+            }
+
+            // 3. Cek tanda tangan (signature)
+            List<Signature> apkSignatures = extractSignatures(apkInfo);
+            PackageInfo installedInfo = getPackageManager().getPackageInfo(getPackageName(), flags);
+            List<Signature> installedSignatures = extractSignatures(installedInfo);
+
+            if (apkSignatures.isEmpty() || installedSignatures.isEmpty()) {
+                return "Tidak dapat membaca tanda tangan APK.";
+            }
+
+            boolean match = false;
+            for (Signature s1 : apkSignatures) {
+                for (Signature s2 : installedSignatures) {
+                    if (s1.equals(s2)) { match = true; break; }
+                }
+                if (match) break;
+            }
+            if (!match) {
+                return "Tanda tangan (signature) APK update TIDAK cocok dengan aplikasi yang terpasang.\n\n" +
+                        "APK update kemungkinan dibangun dengan kunci (keystore) yang berbeda.";
+            }
+
+            return null; // Valid
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "verifyUpdateApk error: " + e.getMessage());
+            return "Gagal memverifikasi APK: " + e.getMessage();
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private List<Signature> extractSignatures(PackageInfo info) {
+        List<Signature> result = new ArrayList<>();
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && info.signingInfo != null) {
+                Signature[] sigs = info.signingInfo.getApkContentsSigners();
+                if (sigs != null) for (Signature s : sigs) result.add(s);
+            } else if (info.signatures != null) {
+                for (Signature s : info.signatures) result.add(s);
+            }
+        } catch (Exception e) {
+            android.util.Log.e(TAG, "extractSignatures error: " + e.getMessage());
+        }
+        return result;
+    }
+
+    private void installApk(File apkFile) {
+        try {
+            Uri apkUri = FileProvider.getUriForFile(this, FILE_PROVIDER_AUTHORITY, apkFile);
+            android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_VIEW);
+            intent.setDataAndType(apkUri, "application/vnd.android.package-archive");
+            intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+            startActivity(intent);
+        } catch (Exception e) {
+            Toast.makeText(this, "Gagal membuka installer: " + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    // ================= MENU: TENTANG SAS =================
+
+    private void showAboutDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Tentang SAS")
+                .setMessage(
+                        "CBT Exambro SAS\n\n" +
+                        "Aplikasi ujian berbasis PWA (Computer Based Test) untuk sekolah.\n\n" +
+                        "Fitur:\n" +
+                        "• Ujian Online & Offline\n" +
+                        "• Mode Ujian Terkunci (Lock Task)\n" +
+                        "• Pencegahan Screenshot\n" +
+                        "• Pemilihan Server Sekolah\n\n" +
+                        "AI Chef by nibunasah © 2026")
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    // ================= MENU: VERSI =================
+
+    private void showVersionDialog() {
+        new AlertDialog.Builder(this)
+                .setTitle("Versi Aplikasi")
+                .setMessage(
+                        "CBT Exambro SAS\n" +
+                        "Versi: v" + getAppVersionName() + "\n" +
+                        "Kode Versi: " + getAppVersionCode() + "\n" +
+                        "Sistem: Android " + Build.VERSION.RELEASE + " (API " + Build.VERSION.SDK_INT + ")")
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    private String getAppVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private int getAppVersionCode() {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                return (int) getPackageManager().getPackageInfo(getPackageName(), 0).getLongVersionCode();
+            }
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private String fetchServerJsonFromServer(AtomicReference<String> errorRef) {
@@ -682,13 +1218,22 @@ public class MainActivity extends AppCompatActivity {
             name.setText(item.name);
             url.setText(item.url);
 
-            // Ganti ikon berdasarkan jenis item
+            // Ganti ikon & warna berdasarkan jenis item
             if (item.name.equals("Input Server Manual")) {
                 icon.setImageResource(android.R.drawable.ic_menu_edit);
                 name.setTextColor(Color.parseColor("#3b82f6"));
-            } else if (item.name.equals("Perbarui Daftar Sekolah")) {
+            } else if (item.name.equals("Perbarui Daftar Sekolah") || item.name.equals("Cek Update")) {
                 icon.setImageResource(android.R.drawable.ic_popup_sync);
                 name.setTextColor(Color.parseColor("#10b981"));
+            } else if (item.name.equals("Pilih Server")) {
+                icon.setImageResource(android.R.drawable.ic_menu_directions);
+                name.setTextColor(Color.parseColor("#0d6efd"));
+            } else if (item.name.equals("Tentang SAS")) {
+                icon.setImageResource(android.R.drawable.ic_menu_info_details);
+                name.setTextColor(Color.parseColor("#7c3aed"));
+            } else if (item.name.equals("Versi")) {
+                icon.setImageResource(android.R.drawable.ic_menu_manage);
+                name.setTextColor(Color.parseColor("#f59e0b"));
             } else {
                 icon.setImageResource(android.R.drawable.ic_menu_directions);
                 name.setTextColor(Color.BLACK);

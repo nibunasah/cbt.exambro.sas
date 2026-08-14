@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Path yang boleh dibagikan via FileProvider.
+    Digunakan untuk meneruskan file APK hasil unduhan ke installer sistem.
+-->
+<paths>
+    <!-- getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS) -->
+    <external-files-path name="downloads" path="Download/" />
+    <!-- getFilesDir() (fallback jika storage eksternal tidak tersedia) -->
+    <files-path name="internal" path="." />
+</paths>
